@@ -17,6 +17,14 @@ nextflow.enable.dsl = 2
 
 ////////////////////////////////////////////////////
 /* --               PRINT HELP                 -- */
+params.help = ''
+
+if (params.help) {
+    include {helpMessage} from './modules/local/process/help.nf'
+    helpMessage()
+    exit 0
+}
+
 ////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////
@@ -40,67 +48,65 @@ log.info """\
 ===============================================
 Input : Raw Illumina CAGE sequences
 Input : Barcode list TSV (i.e. sample\tbarcode)
-Input : Reference Genome FASTA (bowtie2 index)
+Input : Reference Genome FASTA (URL or local)
 Output : Strand specific bp resolution bigWig 
 Running task: $params.all_in_one
+Workflow version: ${workflow.manifest.version}
 -----------------------------------------------
 """
 
 //include {module as module_alias; module as module_alias2}
-include {demuxMaker;demux;merger} from './modules/local/process/demux.nf'
-include {trimKeeper;trimmer} from './modules/local/process/trimmer.nf'
-include {tmpMaker;reportsMaker;fastqc as qc_pre;fastqc as qc_post;multiqc} from './modules/local/process/fastqc_multiqc.nf'
-include {downloadRef; bowtie2Build; mapper} from './modules/local/process/mapper.nf'
-include {bG2bW} from './modules/local/process/bedG_to_bigWig.nf'
+include {DEMUX;MERGER} from './modules/local/process/demux.nf'
+include {TRIMMER} from './modules/local/process/trimmer.nf'
+include {tmpMaker;FASTQC as qc_pre;FASTQC as qc_post;MULTIQC} from './modules/local/process/fastqc_multiqc.nf'
+include {DOWNLOADREF; BT2BUILD; BT2MAPPER} from './modules/local/process/mapper.nf'
+include {BG2BW} from './modules/local/process/bedG_to_bigWig.nf'
+
+params.ref_fasta = 'https://sites.ualberta.ca/~stothard/1000_bull_genomes/ARS-UCD1.2_Btau5.0.1Y.fa.gz'
+params.raw_fastq = "$projectDir/fastq_files/*.gz"
+params.barcodes = Channel.value("$projectDir/barcode_files/barcode.list")
+
 
 workflow {
-        //path doesn't take relative paths but file does
         //Queue channel allows for parallel execution of all files in a FIFO queue
-        raw_fastq=channel.fromPath("$projectDir/fastq_files/*.gz")     
+        raw_fastq_ch = Channel
+                .fromPath(params.raw_fastq)
+                .map({it -> [it.simpleName,it]})    
         
-        //barcodes should be read unlimited times >>> value.channel  >>> channel.value(1)
-        //a process is needed to read in the list of barcodes to a value list where they could be iterated
-        barcodes=channel.value("$projectDir/barcode_files/barcode.list")
+        //barcodes should be read unlimited times >>> value.channel 
+        //barcodes = Channel.value("$projectDir/barcode_files/barcode.list")
 
-        // reference fasta file
-        fasta=channel.value('https://sites.ualberta.ca/~stothard/1000_bull_genomes/ARS-UCD1.2_Btau5.0.1Y.fa.gz')
-	//fasta=channel.value('http://ftp.ensembl.org/pub/release-104/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.toplevel.fa.gz')
- 
+        
         //AIO workflow
-        reportsMaker()
 	tmpMaker()
-        qc_pre(raw_fastq) 
-        // emit index 1 is the html files
-        // emit index 0 is the zip files
+        qc_pre(raw_fastq_ch) 
+
         
         
-        demux(raw_fastq,barcodes)
-        //demux.out.OUT_demux.view()
-        
-        demux_single_channel=demux.out.OUT_demux
+        DEMUX(raw_fastq_ch,params.barcodes)
+        demux_single_ch=DEMUX.out.OUT_demux
                                 .flatten()
-                                .map { it->tuple(it.simpleName,it.parent) }
-                                .groupTuple(by:0)
-        
-        //demux_single_channel.view()
-        
-        merger(demux_single_channel)
+                                .map { it-> [it.simpleName.replaceAll('CAGE_[0-9][0-9]_',''),it] }
+                                .groupTuple(by: 0 , size: -1)
+                                                                    
+        MERGER(demux_single_ch)
         
         
         //Need to emit the merger output so it can be pegged to the qc_post
-        fastqc_single_channel=merger.out.OUT_merger
+        fastqc_single_ch=MERGER.out.OUT_merger
                                 .flatten()
+                                .map({it -> [it.simpleName,it]})   
 
         // This post QC should get the merged files not individuals
-        qc_post(fastqc_single_channel)
+        qc_post(fastqc_single_ch)
         
-        demux_single_channel=qc_pre.out.fastqc_zip_file
-                                .mix(qc_post.out.fastqc_zip_file)
+        demux_single_channel=qc_pre.out.fastqc_zips
+                                .mix(qc_post.out.fastqc_zips)
                                 .flatten()
                         
-        multiqc(demux_single_channel.collect())
+        MULTIQC(demux_single_channel.collect())
         
-        trimmer_single_channel=merger.out.OUT_merger
+        trimmer_single_ch=MERGER.out.OUT_merger
                                  .flatten()
                                  .map { it->tuple( it.simpleName,it ) }
                                  .join(channel
@@ -109,29 +115,36 @@ workflow {
                                  .map { it->tuple(it[0],it[2],it[1])}
                                  
         
-        //trimmer_single_channel.view()
-        trimKeeper()
-        trimmer(trimmer_single_channel)
+        TRIMMER(trimmer_single_ch)
 
         
         //Mapping and BedGraph to BigWig conversion
-        mapping_single_channel=trimmer.out.OUT_trimmed
+        mapping_single_ch=TRIMMER.out.OUT_trimmed
                                 .flatten()
                                 .map{ it-> tuple(it.simpleName,it)}
         
+        
         // Downloading reference fasta file
-        downloadRef(fasta)
+        DOWNLOADREF(Channel.of(params.ref_fasta))
+        
         // Build bowtie2 index
-        bowtie2Build(downloadRef.out.fasta)
-        // Mappping reads
-        mapper(mapping_single_channel, bowtie2Build.out.bowtie_index)
+        BT2BUILD(DOWNLOADREF.out)
 
-        convert_single_channel=mapper.out.OUT_mapped
+        mapping_index_ch=BT2BUILD.out.bowtie_index
+                                .flatten()
+                                .map({ it -> "$it".replaceAll(/.[1-4].bt2|.rev.[1-2].bt2/,"") })
+                                .unique()
+                                .map({ it -> new File(it) })
+                                //.view()
+
+        // Mappping reads
+        BT2MAPPER(mapping_single_ch,mapping_index_ch)
+        
+        convert_single_channel=BT2MAPPER.out.OUT_mapped
                                 .flatten()
                                 .map{ it-> tuple(it.simpleName,it)}
-        convert_single_channel.view()
-
-        bG2bW(convert_single_channel)
+        
+        BG2BW(convert_single_channel,BT2BUILD.out.ref_cov)
         
 }
 

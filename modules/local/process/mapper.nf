@@ -1,77 +1,71 @@
 #!/usr/bin/env nextflow
 
-// The $baseDir is an env variable in DSL2
-
 //Enabling the DSL2 syntax 
 nextflow.enable.dsl = 2
 
-params.out  = "$projectDir/bams"
-params.out2 = "$projectDir/"
-
-process downloadRef {
+process DOWNLOADREF {
     tag "Sourcing the reference..."
-    publishDir "${params.out2}/ref" , mode: 'copy', overWrite: true
-    cpus params.all_threads
+    label 'small'
+
+    publishDir "$projectDir/ref" , mode: 'copy', overWrite: true
     maxForks 100
     cache true
 
     input:
-        val fasta
+        val fasta_url
         
     output:
-        path '*.fa', emit: fasta
-
+        path '*.fa'
+    
     script:
     """
-    #echo "Downloading Bos_taurus.ARS-UCD1.2 from Ensembl v103..."
-    #wget $fasta
-    aria2c -x 16 $fasta
-
-    pigz -d -p $params.all_threads *.fa.gz
+        aria2c -x 16 $fasta_url
+        pigz -d -p $task.cpus \$(basename '$fasta_url')
     """
+    
 }
 
-process bowtie2Build {
+process BT2BUILD {
     tag "Bowtie2 build..."
-    publishDir "${params.out2}/ref" , mode: 'copy', overWrite: true
-    cpus params.all_threads
-    maxForks 100
+    publishDir "$projectDir/ref" , mode: 'copy', overWrite: true
+    //bowtie2-build refuses to take more than 1 cpu
+    label 'medium'
     cache true
 
     input:
         path fasta
     output:
-        path 'ref', emit: bowtie_index
+        path '*.bt2' , emit: bowtie_index , optional: false
+        path '*.fai'
         path 'ref_cov', emit: ref_cov
 
     script:
     """
-    mkdir -p ref
-
     samtools faidx $fasta
-
-    #if [ -s "$projectDir/ref/*.bt2" ]; then
-    if [[ 'ls -1 $projectDir/ref/ref/*.bt2|wc -l' > 4 ]]; then
-	    echo "Bowtie2 indexes already exist"
-    else
-	    echo "Indexing ${fasta} for bowtie2..."
-	    bowtie2-build --threads $params.all_threads ${fasta} ref/${fasta.baseName}
-    fi
+    #files=\$(ls $projectDir/ref/*.bt2 2> /dev/null | wc -l)
+    #
+    #if [ **"\$files" != "0"**  ]; then
+	#    echo "Bowtie2 indexes already exist"
+    #else
+	#    echo "Indexing ${fasta} for bowtie2..."
+	    bowtie2-build --threads $task.cpus ${fasta} ${fasta.baseName}
+    #fi
     #the 1000bull genome MT is longer than ENSEMBL and this file should be reproduced for the 1KB runs
     awk '{print \$1,\$2+2}' ${fasta}.fai > ref_cov
     """
 }
 
-process mapper {
+process BT2MAPPER {
     tag "Mapping using bowtie2..."
-    publishDir params.out , mode: 'copy', overWrite: true
-    cpus params.all_threads
-    maxForks 100
+    label 'medium'
+
+    publishDir "$projectDir/bams" , mode: 'copy', overWrite: true
     cache true
     
     input:
         tuple val(name) , path(trimmed_fastq)
-        path bowtie_index
+        each bowtie_index
+
     output:
         path '*.bam' , emit: OUT_mapped
         path '*.metrics', emit: OUT_mapped_metrics
@@ -86,15 +80,12 @@ process mapper {
     
     script:
     """
-    INDEX=`find -L ./ -name "*.rev.1.bt2" | sed 's/.rev.1.bt2//'`
-
-    mkdir -p bams && \\
-    bowtie2 -p $params.all_threads --met-file ${name}.metrics --very-sensitive \\
+    bowtie2 -p $task.cpus --met-file ${name}.metrics --very-sensitive \\
     --rg-id ${name} --rg LB:${name} --rg PL:ILLUMINA --rg SM:${name} \\
-    -x \$INDEX \\
+    -x ${bowtie_index} \\
     -U ${trimmed_fastq} | \\
-    samtools view -@ $params.all_threads -bS -F 4 | \\
-    samtools sort -@ $params.all_threads -o ${name}.bam
+    samtools view -@ $task.cpus -bS -F 4 | \\
+    samtools sort -@ $task.cpus -o ${name}.bam
     samtools index ${name}.bam
     """
 }
