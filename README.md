@@ -4,6 +4,8 @@
   <img align="right" width="180" ![Docker Logo] src="/images/docker_logo.png">
 </p>
 
+[![DOI](https://zenodo.org/badge/397618218.svg)](https://zenodo.org/badge/latestdoi/397618218)
+
 # BovReg nf-cage pipeline 
 This is a CAGE analysis pipeline used in BovReg consortium (https://www.bovreg.eu/) studies. This pipeline was wrapped using NextFlow DSL2 syntax from demultiplexing to base pair resolution and strand specific read counting <br> (i.e. compatible for import to CAGEfightR https://bioconductor.org/packages/release/bioc/html/CAGEfightR.html)
 
@@ -172,5 +174,7 @@ NB. nf-core and pyinquirer packages were manually removed from the docker builds
 NB. The main branch contains tested pipeline and for nf-core compatibility a "nfcore_opt" branch was created.
 NB. The dev and dev_hpc branches were merged in to main for the final version. 
 
+# Citation
 
+Salavati M, Caulton A, Clark R, Gazova I, Smith TPL, Worley KC, Cockett NE, Archibald AL, Clarke SM, Murdoch BM, Clark EL. Global Analysis of Transcription Start Sites in the New Ovine Reference Genome (Oar rambouillet v1.0). Front Genet. 2020 Oct 23;11:580580. doi: 10.3389/fgene.2020.580580. PMID: 33193703; PMCID: PMC7645153.
 
